@@ -110,7 +110,7 @@ func (ps Params) ByName(name string) string {
 // Router is a http.Handler which can be used to dispatch requests to different
 // handler functions via configurable routes
 type Router struct {
-	trees map[string]*node
+	root *node
 
 	// Enables automatic redirection if the current route can't be matched but a
 	// handler for the path with (without) the trailing slash exists.
@@ -118,17 +118,6 @@ type Router struct {
 	// client is redirected to /foo with http status code 301 for GET requests
 	// and 307 for all other request methods.
 	RedirectTrailingSlash bool
-
-	// If enabled, the router tries to fix the current request path, if no
-	// handle is registered for it.
-	// First superfluous path elements like ../ or // are removed.
-	// Afterwards the router does a case-insensitive lookup of the cleaned path.
-	// If a handle can be found for this route, the router makes a redirection
-	// to the corrected path with status code 301 for GET requests and 307 for
-	// all other request methods.
-	// For example /FOO and /..//Foo could be redirected to /foo.
-	// RedirectTrailingSlash is independent of this option.
-	RedirectFixedPath bool
 
 	// If enabled, the router checks if another method is allowed for the
 	// current route, if the current request can not be routed.
@@ -163,7 +152,6 @@ var _ http.Handler = New()
 func New() *Router {
 	return &Router{
 		RedirectTrailingSlash:  true,
-		RedirectFixedPath:      true,
 		HandleMethodNotAllowed: true,
 	}
 }
@@ -216,17 +204,11 @@ func (r *Router) Handle(method, path string, handle Handle) {
 		panic("path must begin with '/' in path '" + path + "'")
 	}
 
-	if r.trees == nil {
-		r.trees = make(map[string]*node)
+	if r.root == nil {
+		r.root = new(node)
 	}
 
-	root := r.trees[method]
-	if root == nil {
-		root = new(node)
-		r.trees[method] = root
-	}
-
-	root.addRoute(path, handle)
+	r.root.addRoute(path, method, handle)
 }
 
 // Handler is an adapter which allows the usage of an http.Handler as a
@@ -274,14 +256,27 @@ func (r *Router) recv(w http.ResponseWriter, req *http.Request) {
 	}
 }
 
+// LookupHandlers allows the manual lookup of all registered methods for a given path.
+// This is e.g. useful to build a framework around this router.
+// If the path was found, it returns the map of handle functions and the path parameter
+// values. Otherwise the third return value indicates whether a redirection to
+// the same path with an extra / without the trailing slash should be performed.
+func (r *Router) LookupHandlers(path string) (map[string]Handle, Params, bool) {
+	if r.root == nil {
+		return nil, nil, false
+	}
+	return r.root.getValue(path)
+}
+
 // Lookup allows the manual lookup of a method + path combo.
 // This is e.g. useful to build a framework around this router.
 // If the path was found, it returns the handle function and the path parameter
 // values. Otherwise the third return value indicates whether a redirection to
 // the same path with an extra / without the trailing slash should be performed.
 func (r *Router) Lookup(method, path string) (Handle, Params, bool) {
-	if root := r.trees[method]; root != nil {
-		return root.getValue(path)
+	if r.root != nil {
+		handlers, ps, ts := r.root.getValue(path)
+		return handlers[method], ps, ts
 	}
 	return nil, nil, false
 }
@@ -292,13 +287,21 @@ func (r *Router) ServeHTTP(w http.ResponseWriter, req *http.Request) {
 		defer r.recv(w, req)
 	}
 
-	if root := r.trees[req.Method]; root != nil {
+	if r.root != nil {
 		path := req.URL.Path
-
-		if handle, ps, tsr := root.getValue(path); handle != nil {
-			handle(w, req, ps)
-			return
-		} else if req.Method != "CONNECT" && path != "/" {
+		handlers, ps, tsr := r.root.getValue(path)
+		if handlers != nil {
+			handle := handlers[req.Method]
+			// if no HEAD handler is registered, fallback to GET handler
+			if handle == nil && req.Method == "HEAD" {
+				handle = handlers["GET"]
+			}
+			if handle != nil {
+				handle(w, req, ps)
+				return
+			}
+		}
+		if req.Method != "CONNECT" && path != "/" {
 			code := 301 // Permanent redirect, request with GET method
 			if req.Method != "GET" {
 				// Temporary redirect, request with same method
@@ -315,42 +318,18 @@ func (r *Router) ServeHTTP(w http.ResponseWriter, req *http.Request) {
 				http.Redirect(w, req, req.URL.String(), code)
 				return
 			}
-
-			// Try to fix the request path
-			if r.RedirectFixedPath {
-				fixedPath, found := root.findCaseInsensitivePath(
-					CleanPath(path),
-					r.RedirectTrailingSlash,
-				)
-				if found {
-					req.URL.Path = string(fixedPath)
-					http.Redirect(w, req, req.URL.String(), code)
-					return
-				}
-			}
 		}
-	}
 
-	// Handle 405
-	if r.HandleMethodNotAllowed {
-		for method := range r.trees {
-			// Skip the requested method - we already tried this one
-			if method == req.Method {
-				continue
+		if r.HandleMethodNotAllowed && handlers != nil {
+			if r.MethodNotAllowed != nil {
+				r.MethodNotAllowed(w, req)
+			} else {
+				http.Error(w,
+					http.StatusText(http.StatusMethodNotAllowed),
+					http.StatusMethodNotAllowed,
+				)
 			}
-
-			handle, _, _ := r.trees[method].getValue(req.URL.Path)
-			if handle != nil {
-				if r.MethodNotAllowed != nil {
-					r.MethodNotAllowed(w, req)
-				} else {
-					http.Error(w,
-						http.StatusText(http.StatusMethodNotAllowed),
-						http.StatusMethodNotAllowed,
-					)
-				}
-				return
-			}
+			return
 		}
 	}
 

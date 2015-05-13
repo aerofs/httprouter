@@ -13,7 +13,7 @@ import (
 )
 
 func printChildren(n *node, prefix string) {
-	fmt.Printf(" %02d:%02d %s%s[%d] %v %t %d \r\n", n.priority, n.maxParams, prefix, n.path, len(n.children), n.handle, n.wildChild, n.nType)
+	fmt.Printf(" %02d:%02d %s%s[%d] %v %t %d \r\n", n.priority, n.maxParams, prefix, n.path, len(n.children), n.handlers, n.wildChild, n.nType)
 	for l := len(n.path); l > 0; l-- {
 		prefix += " "
 	}
@@ -40,16 +40,16 @@ type testRequests []struct {
 
 func checkRequests(t *testing.T, tree *node, requests testRequests) {
 	for _, request := range requests {
-		handler, ps, _ := tree.getValue(request.path)
+		handlers, ps, _ := tree.getValue(request.path)
 
-		if handler == nil {
+		if handlers == nil {
 			if !request.nilHandler {
 				t.Errorf("handle mismatch for route '%s': Expected non-nil handle", request.path)
 			}
 		} else if request.nilHandler {
 			t.Errorf("handle mismatch for route '%s': Expected nil handle", request.path)
 		} else {
-			handler(nil, nil, nil)
+			handlers[""](nil, nil, nil)
 			if fakeHandlerValue != request.route {
 				t.Errorf("handle mismatch for route '%s': Wrong handle (%s != %s)", request.path, fakeHandlerValue, request.route)
 			}
@@ -67,7 +67,7 @@ func checkPriorities(t *testing.T, n *node) uint32 {
 		prio += checkPriorities(t, n.children[i])
 	}
 
-	if n.handle != nil {
+	if n.handlers != nil {
 		prio++
 	}
 
@@ -129,7 +129,7 @@ func TestTreeAddAndGet(t *testing.T) {
 		"/β",
 	}
 	for _, route := range routes {
-		tree.addRoute(route, fakeHandler(route))
+		tree.addRoute(route, "", fakeHandler(route))
 	}
 
 	//printChildren(tree, "")
@@ -172,7 +172,7 @@ func TestTreeWildcard(t *testing.T) {
 		"/info/:user/project/:project",
 	}
 	for _, route := range routes {
-		tree.addRoute(route, fakeHandler(route))
+		tree.addRoute(route, "", fakeHandler(route))
 	}
 
 	//printChildren(tree, "")
@@ -217,7 +217,7 @@ func testRoutes(t *testing.T, routes []testRoute) {
 
 	for _, route := range routes {
 		recv := catchPanic(func() {
-			tree.addRoute(route.path, nil)
+			tree.addRoute(route.path, "", nil)
 		})
 
 		if route.conflict {
@@ -281,7 +281,7 @@ func TestTreeDupliatePath(t *testing.T) {
 	}
 	for _, route := range routes {
 		recv := catchPanic(func() {
-			tree.addRoute(route, fakeHandler(route))
+			tree.addRoute(route, "", fakeHandler(route))
 		})
 		if recv != nil {
 			t.Fatalf("panic inserting route '%s': %v", route, recv)
@@ -289,7 +289,7 @@ func TestTreeDupliatePath(t *testing.T) {
 
 		// Add again
 		recv = catchPanic(func() {
-			tree.addRoute(route, nil)
+			tree.addRoute(route, "", nil)
 		})
 		if recv == nil {
 			t.Fatalf("no panic while inserting duplicate route '%s", route)
@@ -318,7 +318,7 @@ func TestEmptyWildcardName(t *testing.T) {
 	}
 	for _, route := range routes {
 		recv := catchPanic(func() {
-			tree.addRoute(route, nil)
+			tree.addRoute(route, "", nil)
 		})
 		if recv == nil {
 			t.Fatalf("no panic while inserting route with empty wildcard name '%s", route)
@@ -355,7 +355,7 @@ func TestTreeDoubleWildcard(t *testing.T) {
 	for _, route := range routes {
 		tree := &node{}
 		recv := catchPanic(func() {
-			tree.addRoute(route, nil)
+			tree.addRoute(route, "", nil)
 		})
 
 		if rs, ok := recv.(string); !ok || !strings.HasPrefix(rs, panicMsg) {
@@ -403,7 +403,7 @@ func TestTreeTrailingSlashRedirect(t *testing.T) {
 	}
 	for _, route := range routes {
 		recv := catchPanic(func() {
-			tree.addRoute(route, fakeHandler(route))
+			tree.addRoute(route, "", fakeHandler(route))
 		})
 		if recv != nil {
 			t.Fatalf("panic inserting route '%s': %v", route, recv)
@@ -452,143 +452,12 @@ func TestTreeTrailingSlashRedirect(t *testing.T) {
 	}
 }
 
-func TestTreeFindCaseInsensitivePath(t *testing.T) {
-	tree := &node{}
-
-	routes := [...]string{
-		"/hi",
-		"/b/",
-		"/ABC/",
-		"/search/:query",
-		"/cmd/:tool/",
-		"/src/*filepath",
-		"/x",
-		"/x/y",
-		"/y/",
-		"/y/z",
-		"/0/:id",
-		"/0/:id/1",
-		"/1/:id/",
-		"/1/:id/2",
-		"/aa",
-		"/a/",
-		"/doc",
-		"/doc/go_faq.html",
-		"/doc/go1.html",
-		"/doc/go/away",
-		"/no/a",
-		"/no/b",
-	}
-
-	for _, route := range routes {
-		recv := catchPanic(func() {
-			tree.addRoute(route, fakeHandler(route))
-		})
-		if recv != nil {
-			t.Fatalf("panic inserting route '%s': %v", route, recv)
-		}
-	}
-
-	// Check out == in for all registered routes
-	// With fixTrailingSlash = true
-	for _, route := range routes {
-		out, found := tree.findCaseInsensitivePath(route, true)
-		if !found {
-			t.Errorf("Route '%s' not found!", route)
-		} else if string(out) != route {
-			t.Errorf("Wrong result for route '%s': %s", route, string(out))
-		}
-	}
-	// With fixTrailingSlash = false
-	for _, route := range routes {
-		out, found := tree.findCaseInsensitivePath(route, false)
-		if !found {
-			t.Errorf("Route '%s' not found!", route)
-		} else if string(out) != route {
-			t.Errorf("Wrong result for route '%s': %s", route, string(out))
-		}
-	}
-
-	tests := []struct {
-		in    string
-		out   string
-		found bool
-		slash bool
-	}{
-		{"/HI", "/hi", true, false},
-		{"/HI/", "/hi", true, true},
-		{"/B", "/b/", true, true},
-		{"/B/", "/b/", true, false},
-		{"/abc", "/ABC/", true, true},
-		{"/abc/", "/ABC/", true, false},
-		{"/aBc", "/ABC/", true, true},
-		{"/aBc/", "/ABC/", true, false},
-		{"/abC", "/ABC/", true, true},
-		{"/abC/", "/ABC/", true, false},
-		{"/SEARCH/QUERY", "/search/QUERY", true, false},
-		{"/SEARCH/QUERY/", "/search/QUERY", true, true},
-		{"/CMD/TOOL/", "/cmd/TOOL/", true, false},
-		{"/CMD/TOOL", "/cmd/TOOL/", true, true},
-		{"/SRC/FILE/PATH", "/src/FILE/PATH", true, false},
-		{"/x/Y", "/x/y", true, false},
-		{"/x/Y/", "/x/y", true, true},
-		{"/X/y", "/x/y", true, false},
-		{"/X/y/", "/x/y", true, true},
-		{"/X/Y", "/x/y", true, false},
-		{"/X/Y/", "/x/y", true, true},
-		{"/Y/", "/y/", true, false},
-		{"/Y", "/y/", true, true},
-		{"/Y/z", "/y/z", true, false},
-		{"/Y/z/", "/y/z", true, true},
-		{"/Y/Z", "/y/z", true, false},
-		{"/Y/Z/", "/y/z", true, true},
-		{"/y/Z", "/y/z", true, false},
-		{"/y/Z/", "/y/z", true, true},
-		{"/Aa", "/aa", true, false},
-		{"/Aa/", "/aa", true, true},
-		{"/AA", "/aa", true, false},
-		{"/AA/", "/aa", true, true},
-		{"/aA", "/aa", true, false},
-		{"/aA/", "/aa", true, true},
-		{"/A/", "/a/", true, false},
-		{"/A", "/a/", true, true},
-		{"/DOC", "/doc", true, false},
-		{"/DOC/", "/doc", true, true},
-		{"/NO", "", false, true},
-		{"/DOC/GO", "", false, true},
-	}
-	// With fixTrailingSlash = true
-	for _, test := range tests {
-		out, found := tree.findCaseInsensitivePath(test.in, true)
-		if found != test.found || (found && (string(out) != test.out)) {
-			t.Errorf("Wrong result for '%s': got %s, %t; want %s, %t",
-				test.in, string(out), found, test.out, test.found)
-			return
-		}
-	}
-	// With fixTrailingSlash = false
-	for _, test := range tests {
-		out, found := tree.findCaseInsensitivePath(test.in, false)
-		if test.slash {
-			if found { // test needs a trailingSlash fix. It must not be found!
-				t.Errorf("Found without fixTrailingSlash: %s; got %s", test.in, string(out))
-			}
-		} else {
-			if found != test.found || (found && (string(out) != test.out)) {
-				t.Errorf("Wrong result for '%s': got %s, %t; want %s, %t",
-					test.in, string(out), found, test.out, test.found)
-				return
-			}
-		}
-	}
-}
-
 func TestTreeInvalidNodeType(t *testing.T) {
 	const panicMsg = "invalid node type"
 
 	tree := &node{}
-	tree.addRoute("/", fakeHandler("/"))
-	tree.addRoute("/:page", fakeHandler("/:page"))
+	tree.addRoute("/", "", fakeHandler("/"))
+	tree.addRoute("/:page", "", fakeHandler("/:page"))
 
 	// set invalid node type
 	tree.children[0].nType = 42
@@ -596,14 +465,6 @@ func TestTreeInvalidNodeType(t *testing.T) {
 	// normal lookup
 	recv := catchPanic(func() {
 		tree.getValue("/test")
-	})
-	if rs, ok := recv.(string); !ok || rs != panicMsg {
-		t.Fatalf("Expected panic '"+panicMsg+"', got '%v'", recv)
-	}
-
-	// case-insensitive lookup
-	recv = catchPanic(func() {
-		tree.findCaseInsensitivePath("/test", true)
 	})
 	if rs, ok := recv.(string); !ok || rs != panicMsg {
 		t.Fatalf("Expected panic '"+panicMsg+"', got '%v'", recv)

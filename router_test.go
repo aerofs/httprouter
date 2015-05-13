@@ -65,6 +65,13 @@ func TestRouter(t *testing.T) {
 	if !routed {
 		t.Fatal("routing failed")
 	}
+
+	routed = false
+	req, _ = http.NewRequest("HEAD", "/user/gopher", nil)
+	router.ServeHTTP(w, req)
+	if !routed {
+		t.Fatal("HEAD->GET routing fallback failed")
+	}
 }
 
 type handlerStruct struct {
@@ -216,15 +223,15 @@ func TestRouterNotFound(t *testing.T) {
 		code   int
 		header string
 	}{
-		{"/path/", 301, "map[Location:[/path]]"},   // TSR -/
-		{"/dir", 301, "map[Location:[/dir/]]"},     // TSR +/
-		{"", 301, "map[Location:[/]]"},             // TSR +/
-		{"/PATH", 301, "map[Location:[/path]]"},    // Fixed Case
-		{"/DIR/", 301, "map[Location:[/dir/]]"},    // Fixed Case
-		{"/PATH/", 301, "map[Location:[/path]]"},   // Fixed Case -/
-		{"/DIR", 301, "map[Location:[/dir/]]"},     // Fixed Case +/
-		{"/../path", 301, "map[Location:[/path]]"}, // CleanPath
-		{"/nope", 404, ""},                         // NotFound
+		{"/path/", 301, "map[Location:[/path]]"}, // TSR -/
+		{"/dir", 301, "map[Location:[/dir/]]"},   // TSR +/
+		{"", 301, "map[Location:[/]]"},           // TSR +/
+		{"/PATH", 404, ""},                       // Fixed Case
+		{"/DIR/", 404, ""},                       // Fixed Case
+		{"/PATH/", 404, ""},                      // Fixed Case -/
+		{"/DIR", 404, ""},                        // Fixed Case +/
+		{"/../path", 404, ""},                    // CleanPath
+		{"/nope", 404, ""},                       // NotFound
 	}
 	for _, tr := range testRoutes {
 		r, _ := http.NewRequest("GET", tr.route, nil)
